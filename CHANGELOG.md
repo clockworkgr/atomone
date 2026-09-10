@@ -7,14 +7,22 @@
 ### BUG FIXES
 
 - Prevent bundling the wildcard symbol in `TxFeeExceptions` with other exceptions in `x/photon` [#352](https://github.com/atomone-hub/atomone/pull/352)
-- Require `10-gno` validator addresses to be derived from their public keys during conversion, matching native gno validation, and key the duplicate-address check on the parsed address [#367](https://github.com/atomone-hub/atomone/pull/367)
-- Bound `PartSetHeader.Total` and validate the parts hash when converting `10-gno` headers and commits, mirroring gno's `PartSetHeader.ValidateBasic`, so out-of-range values are rejected with an error instead of panicking during vote sign-bytes canonicalization [#367](https://github.com/atomone-hub/atomone/pull/367)
 
 ### DEPENDENCIES
 
 ### FEATURES
 
 ### STATE BREAKING
+
+- Require `10-gno` validator addresses to be derived from their public keys during conversion, matching native gno validation, and key the duplicate-address check on the parsed address [#367](https://github.com/atomone-hub/atomone/pull/367)
+- Bound `PartSetHeader.Total` and validate the parts hash when converting `10-gno` headers and commits, mirroring gno's `PartSetHeader.ValidateBasic`, so out-of-range values are rejected with an error instead of panicking during vote sign-bytes canonicalization [#367](https://github.com/atomone-hub/atomone/pull/367)
+  > Both `10-gno` changes only alter behavior for malformed client messages: a header whose
+  > validator addresses are not derived from their public keys was previously accepted and is
+  > now rejected, and a header whose parts-header total is out of range previously failed with
+  > a recovered panic and now fails with a typed error. Legitimate gno headers are unaffected.
+  > Because the transaction error code and gas used feed into the results hash, nodes running
+  > different versions would diverge if such a message were submitted, so these changes must
+  > ship in a coordinated upgrade rather than a patch release nodes adopt independently.
 
 ### IMPROVEMENTS
 
