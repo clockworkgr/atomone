@@ -219,7 +219,7 @@ func TestMisbehaviour_ValidateBasic_CommitBlockID(t *testing.T) {
 
 // TestMisbehaviour_ValidateBasic_RejectsOversizedPrecommitPartsTotal ensures that a
 // precommit carrying a PartSetHeader.Total beyond the uint32 range is rejected with
-// an error at conversion instead of reaching the vendored CanonicalizePartSetHeader,
+// an error at conversion instead of reaching gno's CanonicalizePartSetHeader,
 // which panics on it while computing vote sign bytes during commit verification.
 func TestMisbehaviour_ValidateBasic_RejectsOversizedPrecommitPartsTotal(t *testing.T) {
 	blockTime := time.Now().UTC()

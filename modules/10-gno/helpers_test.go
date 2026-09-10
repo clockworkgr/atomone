@@ -142,7 +142,8 @@ func TestConvertToGnoValidatorSet_RejectsMalformedSets(t *testing.T) {
 		// Shape of a forged set that reuses a single key, and therefore a
 		// single commit signature, across several validator slots. Every
 		// address is syntactically valid and distinct; only the binding to
-		// the pubkey is wrong.
+		// the pubkey is wrong. The first entry is legitimately bound, so the
+		// converter must stop at the second and name it.
 		valC, _ := createTestValidator(10)
 		forged := []*Validator{
 			createTestValidatorWithKey(100, keyA),
@@ -152,6 +153,7 @@ func TestConvertToGnoValidatorSet_RejectsMalformedSets(t *testing.T) {
 		_, err := ConvertToGnoValidatorSet(&ValidatorSet{Validators: forged})
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrInvalidValidatorSet)
+		require.Contains(t, err.Error(), valB.Address)
 	})
 
 	t.Run("duplicate address differing only in case", func(t *testing.T) {
@@ -257,7 +259,7 @@ func TestConvertToGnoHeader_AppVersion(t *testing.T) {
 
 // TestConvertPartSetHeader_Bounds ensures every converter rejects a PartSetHeader whose
 // Total lies outside gno's [0, MaxBlockPartsCount] bound, or whose hash has the wrong
-// size, instead of forwarding it. The vendored CanonicalizePartSetHeader panics on a
+// size, instead of forwarding it. gno's CanonicalizePartSetHeader panics on a
 // Total outside the uint32 range when computing vote sign bytes, and nothing in the
 // ValidateBasic chain caps Total, so the bound must be enforced at conversion.
 func TestConvertPartSetHeader_Bounds(t *testing.T) {
@@ -271,34 +273,38 @@ func TestConvertPartSetHeader_Bounds(t *testing.T) {
 	blockID := func(p *PartSetHeader) *BlockID {
 		return &BlockID{Hash: make([]byte, 32), PartsHeader: p}
 	}
-	// One conversion per cast site.
-	converters := map[string]func(*PartSetHeader) error{
-		"commit block id": func(p *PartSetHeader) error {
+	// One conversion per cast site, in a slice so subtest order is stable.
+	converters := []struct {
+		name    string
+		convert func(*PartSetHeader) error
+	}{
+		{"commit block id", func(p *PartSetHeader) error {
 			_, err := ConvertToGnoCommit(&Commit{BlockId: blockID(p), Precommits: signed.Commit.Precommits})
 			return err
-		},
-		"precommit block id": func(p *PartSetHeader) error {
+		}},
+		{"precommit block id", func(p *PartSetHeader) error {
 			sig := *signed.Commit.Precommits[0]
 			sig.BlockId = blockID(p)
 			_, err := ConvertToGnoCommit(&Commit{BlockId: signed.Commit.BlockId, Precommits: []*CommitSig{&sig}})
 			return err
-		},
-		"header last block id": func(p *PartSetHeader) error {
+		}},
+		{"header last block id", func(p *PartSetHeader) error {
 			h := createTestGnoHeader(testChainID, 10, time.Now().UTC(), make([]byte, 32), proposer)
 			h.LastBlockId = blockID(p)
 			_, err := ConvertToGnoHeader(h)
 			return err
-		},
-		"block id": func(p *PartSetHeader) error {
+		}},
+		{"block id", func(p *PartSetHeader) error {
 			_, err := ConvertToGnoBlockID(blockID(p))
 			return err
-		},
+		}},
 	}
 
 	badTotals := []int64{-1, bfttypes.MaxBlockPartsCount + 1, math.MaxUint32 + 1, math.MaxInt64}
 	goodTotals := []int64{0, 1, bfttypes.MaxBlockPartsCount}
 
-	for name, convert := range converters {
+	for _, c := range converters {
+		name, convert := c.name, c.convert
 		for _, total := range badTotals {
 			t.Run(fmt.Sprintf("%s rejects total %d", name, total), func(t *testing.T) {
 				var err error
@@ -327,4 +333,27 @@ func TestConvertPartSetHeader_Bounds(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, bfttypes.PartSetHeader{}, id.PartsHeader)
 	})
+}
+
+// TestConvertToGnoCommit_RejectsOutOfRangePrecommitType ensures a precommit Type that
+// does not fit gno's byte-sized SignedMsgType is rejected instead of being truncated
+// by the conversion, which would otherwise let a wire value such as 258 pass gno's
+// precommit type check as PrecommitType.
+func TestConvertToGnoCommit_RejectsOutOfRangePrecommitType(t *testing.T) {
+	valSet, privKeys := createTestValidatorSet(1, 100)
+	signed := createTestSignedHeader(testChainID, 10, time.Now().UTC(), valSet, privKeys)
+
+	// Sanity: the narrowing conversion alone would map this to PrecommitType.
+	wireType := uint32(bfttypes.PrecommitType) + 256
+	require.Equal(t, bfttypes.PrecommitType, bfttypes.SignedMsgType(wireType))
+
+	sig := *signed.Commit.Precommits[0]
+	sig.Type = wireType
+	_, err := ConvertToGnoCommit(&Commit{BlockId: signed.Commit.BlockId, Precommits: []*CommitSig{&sig}})
+	require.ErrorIs(t, err, clienttypes.ErrInvalidHeader)
+	require.Contains(t, err.Error(), "type")
+
+	// The in-range value is still accepted.
+	_, err = ConvertToGnoCommit(signed.Commit)
+	require.NoError(t, err)
 }

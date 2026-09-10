@@ -1,6 +1,8 @@
 package gno
 
 import (
+	"math"
+
 	bfttypes "github.com/gnolang/gno/tm2/pkg/bft/types"
 	"github.com/gnolang/gno/tm2/pkg/crypto"
 	"github.com/gnolang/gno/tm2/pkg/crypto/ed25519"
@@ -146,6 +148,11 @@ func ConvertToGnoCommit(commit *Commit) (*bfttypes.Commit, error) {
 		if err != nil {
 			return nil, errorsmod.Wrapf(err, "invalid block ID in precommit %d", i)
 		}
+		// SignedMsgType is a byte. Reject anything the conversion would truncate,
+		// so gno's own precommit type check sees the actual wire value.
+		if sig.Type > math.MaxUint8 {
+			return nil, errorsmod.Wrapf(clienttypes.ErrInvalidHeader, "precommit %d type %d out of range", i, sig.Type)
+		}
 		gnoCommit.Precommits[i] = &bfttypes.CommitSig{
 			ValidatorIndex: int(sig.ValidatorIndex),
 			Signature:      sig.Signature,
@@ -242,8 +249,8 @@ func ConvertToGnoSignedHeader(signedHeader *SignedHeader) (*bfttypes.SignedHeade
 }
 
 // ConvertToGnoBlockID converts a protobuf BlockID to a bfttypes.BlockID. A nil block
-// ID or parts header converts to the zero value; callers that require them to be
-// present should call ValidateBasic on the result.
+// ID or parts header converts to the zero value. Callers that require a present block
+// ID should check IsComplete on the result, since ValidateBasic accepts the zero value.
 func ConvertToGnoBlockID(blockID *BlockID) (bfttypes.BlockID, error) {
 	if blockID == nil {
 		return bfttypes.BlockID{}, nil
@@ -262,7 +269,7 @@ func ConvertToGnoBlockID(blockID *BlockID) (bfttypes.BlockID, error) {
 // enforcing the bounds gno's PartSetHeader.ValidateBasic applies. A nil parts header
 // converts to the zero value.
 //
-// The vendored CanonicalizePartSetHeader panics on a Total outside the uint32 range
+// gno's CanonicalizePartSetHeader panics on a Total outside the uint32 range
 // while computing vote sign bytes, and relies on PartSetHeader.ValidateBasic having
 // run first. None of the light client's ValidateBasic paths reach that check, so a
 // relayer-supplied Total has to be bounded here, at conversion, before it can reach
