@@ -2,6 +2,8 @@ package gno
 
 import (
 	"crypto/rand"
+	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	cmtcrypto "github.com/cometbft/cometbft/proto/tendermint/crypto"
+	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 )
 
 // TestConvertToGnoCommit_AbsentValidators tests that ConvertToGnoCommit correctly
@@ -250,4 +253,78 @@ func TestConvertToGnoHeader_AppVersion(t *testing.T) {
 
 	require.NotEqual(t, hashWith, hashWithout,
 		"header hash must differ when AppVersion changes, proving it participates in the Merkle tree")
+}
+
+// TestConvertPartSetHeader_Bounds ensures every converter rejects a PartSetHeader whose
+// Total lies outside gno's [0, MaxBlockPartsCount] bound, or whose hash has the wrong
+// size, instead of forwarding it. The vendored CanonicalizePartSetHeader panics on a
+// Total outside the uint32 range when computing vote sign bytes, and nothing in the
+// ValidateBasic chain caps Total, so the bound must be enforced at conversion.
+func TestConvertPartSetHeader_Bounds(t *testing.T) {
+	valSet, privKeys := createTestValidatorSet(1, 100)
+	signed := createTestSignedHeader(testChainID, 10, time.Now().UTC(), valSet, privKeys)
+	proposer := valSet.Validators[0].Address
+
+	psh := func(total int64, hashLen int) *PartSetHeader {
+		return &PartSetHeader{Total: total, Hash: make([]byte, hashLen)}
+	}
+	blockID := func(p *PartSetHeader) *BlockID {
+		return &BlockID{Hash: make([]byte, 32), PartsHeader: p}
+	}
+	// One conversion per cast site.
+	converters := map[string]func(*PartSetHeader) error{
+		"commit block id": func(p *PartSetHeader) error {
+			_, err := ConvertToGnoCommit(&Commit{BlockId: blockID(p), Precommits: signed.Commit.Precommits})
+			return err
+		},
+		"precommit block id": func(p *PartSetHeader) error {
+			sig := *signed.Commit.Precommits[0]
+			sig.BlockId = blockID(p)
+			_, err := ConvertToGnoCommit(&Commit{BlockId: signed.Commit.BlockId, Precommits: []*CommitSig{&sig}})
+			return err
+		},
+		"header last block id": func(p *PartSetHeader) error {
+			h := createTestGnoHeader(testChainID, 10, time.Now().UTC(), make([]byte, 32), proposer)
+			h.LastBlockId = blockID(p)
+			_, err := ConvertToGnoHeader(h)
+			return err
+		},
+		"block id": func(p *PartSetHeader) error {
+			_, err := ConvertToGnoBlockID(blockID(p))
+			return err
+		},
+	}
+
+	badTotals := []int64{-1, bfttypes.MaxBlockPartsCount + 1, math.MaxUint32 + 1, math.MaxInt64}
+	goodTotals := []int64{0, 1, bfttypes.MaxBlockPartsCount}
+
+	for name, convert := range converters {
+		for _, total := range badTotals {
+			t.Run(fmt.Sprintf("%s rejects total %d", name, total), func(t *testing.T) {
+				var err error
+				require.NotPanics(t, func() { err = convert(psh(total, 32)) })
+				require.ErrorIs(t, err, clienttypes.ErrInvalidHeader)
+				require.Contains(t, err.Error(), "parts header total")
+			})
+		}
+		for _, total := range goodTotals {
+			t.Run(fmt.Sprintf("%s accepts total %d", name, total), func(t *testing.T) {
+				require.NoError(t, convert(psh(total, 32)))
+			})
+		}
+		t.Run(name+" rejects wrong hash size", func(t *testing.T) {
+			err := convert(psh(1, 31))
+			require.ErrorIs(t, err, clienttypes.ErrInvalidHeader)
+			require.Contains(t, err.Error(), "parts header hash")
+		})
+		t.Run(name+" accepts empty hash", func(t *testing.T) {
+			require.NoError(t, convert(psh(0, 0)))
+		})
+	}
+
+	t.Run("nil parts header converts to zero value", func(t *testing.T) {
+		id, err := ConvertToGnoBlockID(&BlockID{Hash: make([]byte, 32)})
+		require.NoError(t, err)
+		require.Equal(t, bfttypes.PartSetHeader{}, id.PartsHeader)
+	})
 }

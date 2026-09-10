@@ -113,13 +113,14 @@ func ConvertToGnoCommit(commit *Commit) (*bfttypes.Commit, error) {
 		return nil, errorsmod.Wrap(clienttypes.ErrInvalidHeader, "commit block ID parts header is nil")
 	}
 
+	partsHeader, err := convertPartSetHeader(commit.BlockId.PartsHeader)
+	if err != nil {
+		return nil, errorsmod.Wrap(err, "invalid commit block ID")
+	}
 	gnoCommit := bfttypes.Commit{
 		BlockID: bfttypes.BlockID{
-			Hash: commit.BlockId.Hash,
-			PartsHeader: bfttypes.PartSetHeader{
-				Total: int(commit.BlockId.PartsHeader.Total),
-				Hash:  commit.BlockId.PartsHeader.Hash,
-			},
+			Hash:        commit.BlockId.Hash,
+			PartsHeader: partsHeader,
 		},
 		Precommits: make([]*bfttypes.CommitSig, len(commit.Precommits)),
 	}
@@ -141,15 +142,16 @@ func ConvertToGnoCommit(commit *Commit) (*bfttypes.Commit, error) {
 		if err != nil {
 			return nil, errorsmod.Wrap(clienttypes.ErrInvalidHeader, "invalid validator address")
 		}
+		sigPartsHeader, err := convertPartSetHeader(sig.BlockId.PartsHeader)
+		if err != nil {
+			return nil, errorsmod.Wrapf(err, "invalid block ID in precommit %d", i)
+		}
 		gnoCommit.Precommits[i] = &bfttypes.CommitSig{
 			ValidatorIndex: int(sig.ValidatorIndex),
 			Signature:      sig.Signature,
 			BlockID: bfttypes.BlockID{
-				Hash: sig.BlockId.Hash,
-				PartsHeader: bfttypes.PartSetHeader{
-					Total: int(sig.BlockId.PartsHeader.Total),
-					Hash:  sig.BlockId.PartsHeader.Hash,
-				},
+				Hash:        sig.BlockId.Hash,
+				PartsHeader: sigPartsHeader,
 			},
 			Type:             bfttypes.SignedMsgType(sig.Type),
 			Height:           sig.Height,
@@ -188,6 +190,10 @@ func ConvertToGnoHeader(header *GnoHeader) (*bfttypes.Header, error) {
 	if err != nil {
 		return nil, errorsmod.Wrap(clienttypes.ErrInvalidHeader, "invalid validator address")
 	}
+	lastPartsHeader, err := convertPartSetHeader(header.LastBlockId.PartsHeader)
+	if err != nil {
+		return nil, errorsmod.Wrap(err, "invalid header last block ID")
+	}
 	gnoHeader := bfttypes.Header{
 		Version:    header.Version,
 		ChainID:    header.ChainId,
@@ -197,11 +203,8 @@ func ConvertToGnoHeader(header *GnoHeader) (*bfttypes.Header, error) {
 		TotalTxs:   header.TotalTxs,
 		AppVersion: header.AppVersion,
 		LastBlockID: bfttypes.BlockID{
-			Hash: header.LastBlockId.Hash,
-			PartsHeader: bfttypes.PartSetHeader{
-				Total: int(header.LastBlockId.PartsHeader.Total),
-				Hash:  header.LastBlockId.PartsHeader.Hash,
-			},
+			Hash:        header.LastBlockId.Hash,
+			PartsHeader: lastPartsHeader,
 		},
 		LastCommitHash:     header.LastCommitHash,
 		DataHash:           dataHash,
@@ -238,21 +241,44 @@ func ConvertToGnoSignedHeader(signedHeader *SignedHeader) (*bfttypes.SignedHeade
 	}, nil
 }
 
-// ConvertToGnoBlockID converts a protobuf BlockID to a bfttypes.BlockID.
-func ConvertToGnoBlockID(blockID *BlockID) bfttypes.BlockID {
+// ConvertToGnoBlockID converts a protobuf BlockID to a bfttypes.BlockID. A nil block
+// ID or parts header converts to the zero value; callers that require them to be
+// present should call ValidateBasic on the result.
+func ConvertToGnoBlockID(blockID *BlockID) (bfttypes.BlockID, error) {
 	if blockID == nil {
-		return bfttypes.BlockID{}
+		return bfttypes.BlockID{}, nil
 	}
-	if blockID.PartsHeader == nil {
-		return bfttypes.BlockID{
-			Hash: blockID.Hash,
-		}
+	partsHeader, err := convertPartSetHeader(blockID.PartsHeader)
+	if err != nil {
+		return bfttypes.BlockID{}, err
 	}
 	return bfttypes.BlockID{
-		Hash: blockID.Hash,
-		PartsHeader: bfttypes.PartSetHeader{
-			Total: int(blockID.PartsHeader.Total),
-			Hash:  blockID.PartsHeader.Hash,
-		},
+		Hash:        blockID.Hash,
+		PartsHeader: partsHeader,
+	}, nil
+}
+
+// convertPartSetHeader converts a protobuf PartSetHeader to a bfttypes.PartSetHeader,
+// enforcing the bounds gno's PartSetHeader.ValidateBasic applies. A nil parts header
+// converts to the zero value.
+//
+// The vendored CanonicalizePartSetHeader panics on a Total outside the uint32 range
+// while computing vote sign bytes, and relies on PartSetHeader.ValidateBasic having
+// run first. None of the light client's ValidateBasic paths reach that check, so a
+// relayer-supplied Total has to be bounded here, at conversion, before it can reach
+// commit verification.
+func convertPartSetHeader(psh *PartSetHeader) (bfttypes.PartSetHeader, error) {
+	if psh == nil {
+		return bfttypes.PartSetHeader{}, nil
 	}
+	if psh.Total < 0 || psh.Total > bfttypes.MaxBlockPartsCount {
+		return bfttypes.PartSetHeader{}, errorsmod.Wrapf(clienttypes.ErrInvalidHeader, "parts header total %d out of range [0, %d]", psh.Total, bfttypes.MaxBlockPartsCount)
+	}
+	if err := bfttypes.ValidateHash(psh.Hash); err != nil {
+		return bfttypes.PartSetHeader{}, errorsmod.Wrapf(clienttypes.ErrInvalidHeader, "invalid parts header hash: %v", err)
+	}
+	return bfttypes.PartSetHeader{
+		Total: int(psh.Total),
+		Hash:  psh.Hash,
+	}, nil
 }
