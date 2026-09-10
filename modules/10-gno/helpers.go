@@ -11,9 +11,10 @@ import (
 )
 
 // ConvertToGnoValidatorSet converts a protobuf ValidatorSet to a bfttypes.ValidatorSet.
-// It returns an error if any validator has a non-ed25519 public key, an invalid address,
-// non-positive or out-of-bounds voting power, if any address is duplicated, if the total
-// voting power exceeds the allowed bound, or if the resulting validator set is nil or empty.
+// It returns an error if any validator has a non-ed25519 or malformed public key, an
+// invalid address, an address that is not derived from its public key, non-positive or
+// out-of-bounds voting power, if any address is duplicated, if the total voting power
+// exceeds the allowed bound, or if the resulting validator set is nil or empty.
 //
 // Unlike Gno's NewValidatorSet constructor (which sorts validators by address), this function
 // preserves the input order because GetByIndex-based commit verification relies on the proto
@@ -22,6 +23,11 @@ import (
 // reordering the set. Skipping these checks would allow a relayer-supplied set with negative
 // voting power to produce a negative total, making the +2/3 commit threshold negative and
 // satisfiable by a single signature.
+//
+// The address-to-pubkey binding matters because Validator.Bytes() (and therefore
+// ValidatorSet.Hash()) excludes the address, and commit sign bytes exclude the validator
+// address and index. Without the binding, a relayer could attach distinct addresses to a
+// single public key and have one signature counted in several validator slots.
 func ConvertToGnoValidatorSet(valSet *ValidatorSet) (*bfttypes.ValidatorSet, error) {
 	if valSet == nil {
 		return nil, errorsmod.Wrap(clienttypes.ErrInvalidHeader, "validator set is nil")
@@ -32,21 +38,36 @@ func ConvertToGnoValidatorSet(valSet *ValidatorSet) (*bfttypes.ValidatorSet, err
 		Proposer:   nil,
 	}
 
-	seen := make(map[string]struct{}, len(valSet.Validators))
+	// Keyed on the parsed address rather than the raw string: bech32 decoding is
+	// case-insensitive, so distinct strings can denote the same address.
+	seen := make(map[crypto.Address]struct{}, len(valSet.Validators))
 	totalVotingPower := int64(0)
 	for i, val := range valSet.Validators {
-		key := val.PubKey
-		if key.GetEd25519() == nil {
+		if val == nil {
+			return nil, errorsmod.Wrapf(ErrInvalidValidatorSet, "validator at index %d is nil", i)
+		}
+		keyBytes := val.PubKey.GetEd25519()
+		if keyBytes == nil {
 			return nil, errorsmod.Wrap(clienttypes.ErrInvalidHeader, "validator pubkey is not ed25519")
 		}
+		// Converting a slice to [32]byte panics when the slice is shorter, so
+		// check the length before building the key.
+		if len(keyBytes) != ed25519.PubKeyEd25519Size {
+			return nil, errorsmod.Wrapf(ErrInvalidValidatorSet, "validator pubkey has length %d, expected %d", len(keyBytes), ed25519.PubKeyEd25519Size)
+		}
+		pubKey := ed25519.PubKeyEd25519(keyBytes)
 		address, err := crypto.AddressFromString(val.Address)
 		if err != nil {
 			return nil, errorsmod.Wrap(clienttypes.ErrInvalidHeader, "invalid validator address")
 		}
-		if _, ok := seen[val.Address]; ok {
+		// Same binding Gno enforces in its own validator set constructor.
+		if address != pubKey.Address() {
+			return nil, errorsmod.Wrapf(ErrInvalidValidatorSet, "validator address %s does not match pubkey", val.Address)
+		}
+		if _, ok := seen[address]; ok {
 			return nil, errorsmod.Wrapf(ErrInvalidValidatorSet, "duplicate validator address %s", val.Address)
 		}
-		seen[val.Address] = struct{}{}
+		seen[address] = struct{}{}
 
 		// Reject non-positive voting power: a real Gno validator set never contains
 		// negative- or zero-power members (zero-power entries are removed during updates).
@@ -64,7 +85,7 @@ func ConvertToGnoValidatorSet(valSet *ValidatorSet) (*bfttypes.ValidatorSet, err
 
 		gnoValset.Validators[i] = &bfttypes.Validator{
 			Address:          address,
-			PubKey:           ed25519.PubKeyEd25519(key.GetEd25519()),
+			PubKey:           pubKey,
 			VotingPower:      val.VotingPower,
 			ProposerPriority: val.ProposerPriority,
 		}

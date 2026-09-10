@@ -2,6 +2,7 @@ package gno
 
 import (
 	"crypto/rand"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,8 @@ import (
 	"github.com/gnolang/gno/tm2/pkg/crypto/ed25519"
 
 	"github.com/stretchr/testify/require"
+
+	cmtcrypto "github.com/cometbft/cometbft/proto/tendermint/crypto"
 )
 
 // TestConvertToGnoCommit_AbsentValidators tests that ConvertToGnoCommit correctly
@@ -114,6 +117,67 @@ func TestConvertToGnoValidatorSet_RejectsMalformedSets(t *testing.T) {
 		half := createTestValidatorWithKey(bfttypes.MaxTotalVotingPower-1, keyA)
 		half2 := createTestValidatorWithKey(bfttypes.MaxTotalVotingPower-1, keyB)
 		_, err := ConvertToGnoValidatorSet(&ValidatorSet{Validators: []*Validator{half, half2}})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidValidatorSet)
+	})
+
+	t.Run("address not derived from pubkey", func(t *testing.T) {
+		// valB's address paired with valA's pubkey.
+		unbound := &Validator{Address: valB.Address, PubKey: valA.PubKey, VotingPower: 10}
+		_, err := ConvertToGnoValidatorSet(&ValidatorSet{Validators: []*Validator{unbound}})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidValidatorSet)
+		require.Contains(t, err.Error(), "does not match pubkey")
+
+		// Sanity check: Gno's own constructor also rejects this set.
+		require.Panics(t, func() {
+			bfttypes.NewValidatorSet([]*bfttypes.Validator{toBftValidator(unbound)})
+		})
+	})
+
+	t.Run("one pubkey under several distinct addresses", func(t *testing.T) {
+		// Shape of a forged set that reuses a single key, and therefore a
+		// single commit signature, across several validator slots. Every
+		// address is syntactically valid and distinct; only the binding to
+		// the pubkey is wrong.
+		valC, _ := createTestValidator(10)
+		forged := []*Validator{
+			createTestValidatorWithKey(100, keyA),
+			{Address: valB.Address, PubKey: valA.PubKey, VotingPower: 100},
+			{Address: valC.Address, PubKey: valA.PubKey, VotingPower: 100},
+		}
+		_, err := ConvertToGnoValidatorSet(&ValidatorSet{Validators: forged})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidValidatorSet)
+	})
+
+	t.Run("duplicate address differing only in case", func(t *testing.T) {
+		// bech32 decoding is case-insensitive, so both strings denote the
+		// same address and the duplicate check must key on the parsed value.
+		upper := createTestValidatorWithKey(5, keyA)
+		upper.Address = strings.ToUpper(upper.Address)
+		_, err := ConvertToGnoValidatorSet(&ValidatorSet{Validators: []*Validator{valA, upper}})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidValidatorSet)
+		require.Contains(t, err.Error(), "duplicate")
+	})
+
+	t.Run("pubkey with invalid length is rejected without panicking", func(t *testing.T) {
+		short := createTestValidatorWithKey(10, keyA)
+		short.PubKey = &cmtcrypto.PublicKey{Sum: &cmtcrypto.PublicKey_Ed25519{Ed25519: []byte{1, 2, 3}}}
+		var err error
+		require.NotPanics(t, func() {
+			_, err = ConvertToGnoValidatorSet(&ValidatorSet{Validators: []*Validator{short}})
+		})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidValidatorSet)
+	})
+
+	t.Run("nil validator entry is rejected", func(t *testing.T) {
+		var err error
+		require.NotPanics(t, func() {
+			_, err = ConvertToGnoValidatorSet(&ValidatorSet{Validators: []*Validator{valA, nil}})
+		})
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrInvalidValidatorSet)
 	})
