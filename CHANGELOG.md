@@ -7,6 +7,7 @@
 ### BUG FIXES
 
 - Prevent bundling the wildcard symbol in `TxFeeExceptions` with other exceptions in `x/photon` [#352](https://github.com/atomone-hub/atomone/pull/352)
+- Require `10-gno` validator addresses to be derived from their public keys during conversion, matching native gno validation, and key the duplicate-address check on the parsed address [#367](https://github.com/atomone-hub/atomone/pull/367)
 
 ### DEPENDENCIES
 
