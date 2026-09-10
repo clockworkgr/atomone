@@ -14,8 +14,7 @@
 
 ### STATE BREAKING
 
-- Require `10-gno` validator addresses to be derived from their public keys, matching native gno validation, and deduplicate validators on the parsed address [#367](https://github.com/atomone-hub/atomone/pull/367)
-- Bound `10-gno` `PartSetHeader.Total` and validate the parts hash during conversion, mirroring gno's `PartSetHeader.ValidateBasic`, so out-of-range values return an error instead of panicking [#367](https://github.com/atomone-hub/atomone/pull/367)
+- fix(10-gno): bind validator addresses to pubkeys and bound PartSetHeader.Total during conversion [#367](https://github.com/atomone-hub/atomone/pull/367)
 
 > **Note:** both `10-gno` changes only affect malformed client messages, which are now rejected with an error where they were previously either accepted (unbound validator addresses) or failed with a recovered panic (out-of-range parts total). Legitimate gno headers are unaffected. Since the transaction error code and gas used are part of the results hash, nodes on different versions would diverge on such a message, so these changes require a coordinated upgrade.
 

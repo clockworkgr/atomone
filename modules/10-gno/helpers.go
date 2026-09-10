@@ -40,8 +40,6 @@ func ConvertToGnoValidatorSet(valSet *ValidatorSet) (*bfttypes.ValidatorSet, err
 		Proposer:   nil,
 	}
 
-	// Keyed on the parsed address rather than the raw string: bech32 decoding is
-	// case-insensitive, so distinct strings can denote the same address.
 	seen := make(map[crypto.Address]struct{}, len(valSet.Validators))
 	totalVotingPower := int64(0)
 	for i, val := range valSet.Validators {
