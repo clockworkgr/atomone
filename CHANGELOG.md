@@ -7,6 +7,7 @@
 ### BUG FIXES
 
 - Prevent bundling the wildcard symbol in `TxFeeExceptions` with other exceptions in `x/photon` [#352](https://github.com/atomone-hub/atomone/pull/352)
+- Decode gov params written before the v4 upgrade correctly in historical queries. Pre-v4 state uses the `atomone.gov.v1` field numbering, which the current type read one field off (v1 and v2 state) or rejected (v3 state); `TallyResult` and `Params` queries at those heights panicked or failed. The gov keeper now uses a layout-aware params codec that converts legacy bytes and pins the static quorum as the quorum range for state that predates the dynamic quorum [#366](https://github.com/atomone-hub/atomone/pull/366)
 
 ### DEPENDENCIES
 

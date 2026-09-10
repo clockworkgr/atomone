@@ -257,9 +257,10 @@ func NewAppKeeper(
 	govConfig := govtypes.DefaultConfig()
 	// set the MaxMetadataLen for proposals to the same value as it was pre-sdk v0.47.x
 	govConfig.MaxMetadataLen = 10200
+	govStoreService := runtime.NewKVStoreService(appKeepers.keys[govtypes.StoreKey])
 	appKeepers.GovKeeper = govkeeper.NewKeeper(
 		appCodec,
-		runtime.NewKVStoreService(appKeepers.keys[govtypes.StoreKey]),
+		govStoreService,
 		appKeepers.AccountKeeper,
 		appKeepers.BankKeeper,
 		appKeepers.StakingKeeper,
@@ -268,6 +269,10 @@ func NewAppKeeper(
 		govConfig,
 		authorityStr,
 	)
+
+	// Historical queries read gov params written before the v4 migration; this codec
+	// decodes both layouts so those queries do not misread or panic on old state.
+	appKeepers.GovKeeper.Params = atomonegovkeeper.NewParamsItem(appCodec, govStoreService)
 
 	// Set legacy router for backwards compatibility with gov v1beta1
 	govRouter := govv1beta1.NewRouter()
